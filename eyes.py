@@ -8,13 +8,17 @@ import argparse
 import math
 import pi3d
 import random
-import threading
+from threading import Thread
 import time
 import RPi.GPIO as GPIO
 from svg.path import Path, parse_path
 from xml.dom.minidom import parse
 from gfxutil import *
 from snake_eyes_bonnet import SnakeEyesBonnet
+import face_finder
+import numpy as np
+from pathlib import Path
+
 
 # INPUT CONFIG for eye motion ----------------------------------------------
 # ANALOG INPUTS REQUIRE SNAKE EYES BONNET
@@ -34,6 +38,7 @@ BLINK_PIN       = 23    # GPIO pin for blink button (BOTH eyes)
 WINK_R_PIN      = 24    # GPIO pin for RIGHT eye wink button
 AUTOBLINK       = True  # If True, eyes blink autonomously
 CRAZY_EYES      = False # If True, each eye moves in different directions
+AI_CAM			= True	# RBH
 
 
 # GPIO initialization ------------------------------------------------------
@@ -49,12 +54,19 @@ if WINK_R_PIN >= 0: GPIO.setup(WINK_R_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 # ADC channels are read and stored in a separate thread to avoid slowdown
 # from blocking operations. The animation loop can read at its leisure.
 
+# RBH - default values won't start bonnet
 if JOYSTICK_X_IN >= 0 or JOYSTICK_Y_IN >= 0 or PUPIL_IN >= 0:
 	bonnet = SnakeEyesBonnet(daemon=True)
 	bonnet.setup_channel(JOYSTICK_X_IN, reverse=JOYSTICK_X_FLIP)
 	bonnet.setup_channel(JOYSTICK_Y_IN, reverse=JOYSTICK_Y_FLIP)
 	bonnet.setup_channel(PUPIL_IN, reverse=PUPIL_IN_FLIP)
 	bonnet.start()
+
+# RBH
+if AI_CAM:
+	#brains = Thread(target=face_finder.uface, daemon=True)
+	brains = face_finder.uface(daemon=True)
+	brains.start()
 
 
 # Load SVG file, extract paths & convert to point lists --------------------
@@ -106,11 +118,11 @@ light  = pi3d.Light(lightpos=(0, -500, -500), lightamb=(0.2, 0.2, 0.2))
 # Load texture maps --------------------------------------------------------
 
 irisMap   = pi3d.Texture("graphics/iris.jpg"  , mipmap=False,
-              filter=pi3d.constants.GL_LINEAR)
+			  filter=pi3d.constants.GL_LINEAR)
 scleraMap = pi3d.Texture("graphics/sclera.png", mipmap=False,
-              filter=pi3d.constants.GL_LINEAR, blend=True)
+			  filter=pi3d.constants.GL_LINEAR, blend=True)
 lidMap    = pi3d.Texture("graphics/lid.png"   , mipmap=False,
-              filter=pi3d.constants.GL_LINEAR, blend=True)
+			  filter=pi3d.constants.GL_LINEAR, blend=True)
 # U/V map may be useful for debugging texture placement; not normally used
 #uvMap     = pi3d.Texture("graphics/uv.png"    , mipmap=False,
 #              filter=pi3d.constants.GL_LINEAR, blend=False, m_repeat=True)
@@ -142,7 +154,7 @@ irisRegenThreshold = 0.0
 a = points_bounds(pupilMinPts) # Bounds of pupil at min size (in pixels)
 b = points_bounds(pupilMaxPts) # " at max size
 maxDist = max(abs(a[0] - b[0]), abs(a[1] - b[1]), # Determine distance of max
-              abs(a[2] - b[2]), abs(a[3] - b[3])) # variance around each edge
+			  abs(a[2] - b[2]), abs(a[3] - b[3])) # variance around each edge
 # maxDist is motion range in pixels as pupil scales between 0.0 and 1.0.
 # 1.0 / maxDist is one pixel's worth of scale range.  Need 1/4 that...
 if maxDist > 0: irisRegenThreshold = 0.25 / maxDist
@@ -343,6 +355,26 @@ def frame(p):
 		curY = bonnet.channel[JOYSTICK_Y_IN].value
 		curX = -30.0 + curX * 60.0
 		curY = -30.0 + curY * 60.0
+	if AI_CAM:
+		#curX = brains.get_face[0]
+		xy = brains.get_face()
+		if xy:
+			curX = xy[0] 
+			curY = xy[1]
+			#print("curX is " + str(curX))
+			#print("curY is " + str(curY))
+			curX = -30.0 + curX * 60.0
+			curY = -30.0 + curY * 60.0
+			#print("curX is " + str(curX))
+			#print("curY is " + str(curY))	
+			# TODO: figure out why JOYSTICK_X_FLIP doesn't work
+			# in the meantime: thing down / flip ip / reverse it
+			curX = 1.0 - curX
+			curY = 1.0 - curY
+		else:
+			curX = 0
+			curY = 0
+			# TODO: use last x,y instead of 0,0
 	else :
 		# Autonomous eye position
 		if isMoving == True:
@@ -371,31 +403,31 @@ def frame(p):
 
 		# repeat for other eye if CRAZY_EYES
 	if CRAZY_EYES:
-            if isMovingR == True:
-                if dtR <= moveDurationR:
-                    scale        = (now - startTimeR) / moveDurationR
-                    # Ease in/out curve: 3*t^2-2*t^3
-                    scale = 3.0 * scale * scale - 2.0 * scale * scale * scale
-                    curXR        = startXR + (destXR - startXR) * scale
-                    curYR        = startYR + (destYR - startYR) * scale
-                else:
-                    startXR      = destXR
-                    startYR      = destYR
-                    curXR        = destXR
-                    curYR        = destYR
-                    holdDurationR = random.uniform(0.1, 1.1)
-                    startTimeR    = now
-                    isMovingR     = False
-            else:
-                if dtR >= holdDurationR:
-                    destXR        = random.uniform(-30.0, 30.0)
-                    n             = math.sqrt(900.0 - destXR * destXR)
-                    destYR        = random.uniform(-n, n)
-                    moveDurationR = random.uniform(0.075, 0.175)
-                    startTimeR    = now
-                    isMovingR     = True
+			if isMovingR == True:
+				if dtR <= moveDurationR:
+					scale        = (now - startTimeR) / moveDurationR
+					# Ease in/out curve: 3*t^2-2*t^3
+					scale = 3.0 * scale * scale - 2.0 * scale * scale * scale
+					curXR        = startXR + (destXR - startXR) * scale
+					curYR        = startYR + (destYR - startYR) * scale
+				else:
+					startXR      = destXR
+					startYR      = destYR
+					curXR        = destXR
+					curYR        = destYR
+					holdDurationR = random.uniform(0.1, 1.1)
+					startTimeR    = now
+					isMovingR     = False
+			else:
+				if dtR >= holdDurationR:
+					destXR        = random.uniform(-30.0, 30.0)
+					n             = math.sqrt(900.0 - destXR * destXR)
+					destYR        = random.uniform(-n, n)
+					moveDurationR = random.uniform(0.075, 0.175)
+					startTimeR    = now
+					isMovingR     = True
 
-	# Regenerate iris geometry only if size changed by >= 1/4 pixel
+		# Regenerate iris geometry only if size changed by >= 1/4 pixel
 	if abs(p - prevPupilScale) >= irisRegenThreshold:
 		# Interpolate points between min and max pupil sizes
 		interPupil = points_interp(pupilMinPts, pupilMaxPts, p)
@@ -426,10 +458,10 @@ def frame(p):
 		if (now - blinkStartTimeLeft) >= blinkDurationLeft:
 			# Yes...increment blink state, unless...
 			if (blinkStateLeft == 1 and # Enblinking and...
-			    ((BLINK_PIN >= 0 and    # blink pin held, or...
-			      GPIO.input(BLINK_PIN) == GPIO.LOW) or
-			    (WINK_L_PIN >= 0 and    # wink pin held
-			      GPIO.input(WINK_L_PIN) == GPIO.LOW))):
+				((BLINK_PIN >= 0 and    # blink pin held, or...
+				  GPIO.input(BLINK_PIN) == GPIO.LOW) or
+				(WINK_L_PIN >= 0 and    # wink pin held
+				  GPIO.input(WINK_L_PIN) == GPIO.LOW))):
 				# Don't advance yet; eye is held closed
 				pass
 			else:
@@ -450,10 +482,10 @@ def frame(p):
 		if (now - blinkStartTimeRight) >= blinkDurationRight:
 			# Yes...increment blink state, unless...
 			if (blinkStateRight == 1 and # Enblinking and...
-			    ((BLINK_PIN >= 0 and    # blink pin held, or...
-			      GPIO.input(BLINK_PIN) == GPIO.LOW) or
-			    (WINK_R_PIN >= 0 and    # wink pin held
-			      GPIO.input(WINK_R_PIN) == GPIO.LOW))):
+				((BLINK_PIN >= 0 and    # blink pin held, or...
+				  GPIO.input(BLINK_PIN) == GPIO.LOW) or
+				(WINK_R_PIN >= 0 and    # wink pin held
+				  GPIO.input(WINK_R_PIN) == GPIO.LOW))):
 				# Don't advance yet; eye is held closed
 				pass
 			else:
@@ -633,7 +665,7 @@ def split( # Recursive simulated pupil response when no analog sensor
 		duration *= 0.5 # Split time & range in half for subdivision,
 		range    *= 0.5 # then pick random center point within range:
 		midValue  = ((startValue + endValue - range) * 0.5 +
-		             random.uniform(0.0, range))
+					 random.uniform(0.0, range))
 		split(startValue, midValue, duration, range)
 		split(midValue  , endValue, duration, range)
 	else: # No more subdivisons, do iris motion...
@@ -649,8 +681,8 @@ def split( # Recursive simulated pupil response when no analog sensor
 
 # MAIN LOOP -- runs continuously -------------------------------------------
 
-while True:
 
+while True:
 	if PUPIL_IN >= 0: # Pupil scale from sensor
 		v = bonnet.channel[PUPIL_IN].value
 		# If you need to calibrate PUPIL_MIN and MAX,
@@ -661,7 +693,7 @@ while True:
 		v = (v - PUPIL_MIN) / (PUPIL_MAX - PUPIL_MIN)
 		if PUPIL_SMOOTH > 0:
 			v = ((currentPupilScale * (PUPIL_SMOOTH - 1) + v) /
-			     PUPIL_SMOOTH)
+				PUPIL_SMOOTH)
 		frame(v)
 	else: # Fractal auto pupil scale
 		v = random.random()
